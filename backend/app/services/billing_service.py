@@ -1,8 +1,10 @@
 import json
 
 from app.db import connect
+from app.engines.helpers import money
 from app.engines.peak_compare import compare_plain_vs_peak
 from app.engines.tier_progressive import calc_bill
+from app.engines.tier_rules import validate_tier_rows
 from app.repositories import accounts as accounts_repo
 from app.repositories import readings as readings_repo
 from app.repositories import runs as runs_repo
@@ -31,6 +33,62 @@ class BillingService:
 
     def list_tiers(self):
         return tiers_repo.list_ordered(self._conn)
+
+    def get_draft(self):
+        return {
+            "items": tiers_repo.list_draft(self._conn),
+            "updated_at": tiers_repo.draft_updated_at(self._conn),
+        }
+
+    def save_draft(self, rows: list[dict]):
+        tiers_repo.replace_draft(self._conn, rows)
+        return self.get_draft()
+
+    def _factor(self, peak: bool) -> float:
+        return settings_repo.peak_factor(self._conn) if peak else 1.0
+
+    def simulate_draft(self, kwh: float, peak: bool):
+        """Trial-calc the saved draft against a probe kwh. Read-only: never
+        touches the official tiers, never writes calc_runs."""
+        draft = tiers_repo.list_draft(self._conn)
+        if not draft:
+            raise LookupError("没有已保存的草稿，请先保存草稿")
+        rows = [{"up_to": d["up_to"], "price": d["price"]} for d in draft]
+        factor = self._factor(peak)
+        draft_res = calc_bill(kwh, rows, factor)
+        official_res = calc_bill(kwh, tiers_repo.as_calc_rows(self._conn), factor)
+        return {
+            "source": "draft",
+            "kwh": draft_res["kwh"],
+            "peak": peak,
+            "draft": draft_res,
+            "official": official_res,
+            "delta_total": money(draft_res["total"] - official_res["total"]),
+        }
+
+    def apply_draft(self, kwh: float, peak: bool):
+        """Validate the draft, atomically replace the official tiers with it,
+        and return a before/after segment summary for the same probe kwh.
+        Any failure happens before the replace, so the old official stays."""
+        draft = tiers_repo.list_draft(self._conn)
+        if not draft:
+            raise LookupError("没有可应用的草稿，请先保存草稿")
+        rows = [{"up_to": d["up_to"], "price": d["price"]} for d in draft]
+        validate_tier_rows(rows)
+        factor = self._factor(peak)
+        before = calc_bill(kwh, tiers_repo.as_calc_rows(self._conn), factor)
+        tiers_repo.replace_official(self._conn, rows)
+        # Re-read what is actually stored so the summary reflects the new official.
+        after = calc_bill(kwh, tiers_repo.as_calc_rows(self._conn), factor)
+        return {
+            "applied": True,
+            "kwh": after["kwh"],
+            "peak": peak,
+            "before": before,
+            "after": after,
+            "delta_total": money(after["total"] - before["total"]),
+            "tiers": tiers_repo.list_ordered(self._conn),
+        }
 
     def list_readings(self):
         return readings_repo.list_all(self._conn)
