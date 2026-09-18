@@ -14,6 +14,11 @@ def init_db():
         id INTEGER PRIMARY KEY, name TEXT, meter_no TEXT, note TEXT);
     CREATE TABLE IF NOT EXISTS readings(id INTEGER PRIMARY KEY, account_id INTEGER, kwh REAL, peak INTEGER);
     CREATE TABLE IF NOT EXISTS tiers(id INTEGER PRIMARY KEY, up_to REAL, price REAL, sort_order INTEGER);
+    CREATE TABLE IF NOT EXISTS tier_drafts(
+        scope TEXT PRIMARY KEY,
+        tiers_json TEXT NOT NULL,
+        updated_at TEXT
+    );
     CREATE TABLE IF NOT EXISTS calc_runs(
         id INTEGER PRIMARY KEY,
         kind TEXT,
